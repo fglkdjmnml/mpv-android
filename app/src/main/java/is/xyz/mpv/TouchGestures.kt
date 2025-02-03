@@ -3,8 +3,6 @@ package `is`.xyz.mpv
 import android.content.SharedPreferences
 import android.content.res.Resources
 import android.graphics.PointF
-import android.os.Handler
-import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
 import android.view.MotionEvent
@@ -21,7 +19,6 @@ enum class PropertyChange {
     SeekFixed,
     PlayPause,
     Custom,
-    SingleTap, // Added for single tap action
 }
 
 internal interface TouchGesturesObserver {
@@ -61,20 +58,14 @@ internal class TouchGestures(private val observer: TouchGesturesObserver) {
     private var gestureHoriz = State.Down
     private var gestureVertLeft = State.Down
     private var gestureVertRight = State.Down
-    private var tapGestureLeft: PropertyChange? = null
-    private var tapGestureCenter: PropertyChange? = null
-    private var tapGestureRight: PropertyChange? = null
-
-    // Handler for delayed single tap
-    private val handler = Handler(Looper.getMainLooper())
-    private var singleTapRunnable: Runnable? = null
-    private var isSingleTapPending = false
+    private var tapGestureLeft : PropertyChange? = null
+    private var tapGestureCenter : PropertyChange? = null
+    private var tapGestureRight : PropertyChange? = null
 
     private inline fun checkFloat(vararg n: Float) {
         if (n.any { it.isInfinite() || it.isNaN() })
             throw IllegalArgumentException()
     }
-
     private inline fun checkFloat(p: PointF) = checkFloat(p.x, p.y)
 
     fun setMetrics(width: Float, height: Float) {
@@ -112,6 +103,7 @@ internal class TouchGestures(private val observer: TouchGesturesObserver) {
     private fun processTap(p: PointF): Boolean {
         if (state == State.Up) {
             lastDownTime = SystemClock.uptimeMillis()
+            // 3 is another arbitrary value here that seems good enough
             if (PointF(lastPos.x - p.x, lastPos.y - p.y).length() > trigger * 3)
                 lastTapTime = 0 // last tap was too far away, invalidate
             return true
@@ -125,41 +117,19 @@ internal class TouchGestures(private val observer: TouchGesturesObserver) {
             lastTapTime = 0 // finger was held too long, reset
             return false
         }
-
         if (now - lastTapTime < TAP_DURATION) {
-            // Double tap detected: Cancel pending single tap and handle double tap
-            cancelPendingSingleTap()
-            handleDoubleTap(p)
+            // [ Left 28% ] [    Center    ] [ Right 28% ]
+            if (p.x <= width * 0.28f)
+                tapGestureLeft?.let { sendPropertyChange(it, -1f); return true }
+            else if (p.x >= width * 0.72f)
+                tapGestureRight?.let { sendPropertyChange(it, 1f); return true }
+            else
+                tapGestureCenter?.let { sendPropertyChange(it, 0f); return true }
             lastTapTime = 0
         } else {
-            // Single tap detected: Schedule delayed action
             lastTapTime = now
-            scheduleSingleTap(p)
         }
         return false
-    }
-
-    private fun handleDoubleTap(p: PointF) {
-        when {
-            p.x <= width * 0.28f -> tapGestureLeft?.let { sendPropertyChange(it, -1f) }
-            p.x >= width * 0.72f -> tapGestureRight?.let { sendPropertyChange(it, 1f) }
-            else -> tapGestureCenter?.let { sendPropertyChange(it, 0f) }
-        }
-    }
-
-    private fun scheduleSingleTap(p: PointF) {
-        isSingleTapPending = true
-        singleTapRunnable = Runnable {
-            // Handle single tap action (e.g., show/hide controls)
-            sendPropertyChange(PropertyChange.SingleTap, 0f)
-            isSingleTapPending = false
-        }
-        handler.postDelayed(singleTapRunnable!!, TAP_DURATION)
-    }
-
-    private fun cancelPendingSingleTap() {
-        singleTapRunnable?.let { handler.removeCallbacks(it) }
-        isSingleTapPending = false
     }
 
     private fun processMovement(p: PointF): Boolean {
